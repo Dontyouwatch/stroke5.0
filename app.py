@@ -12,15 +12,15 @@ app = Flask(__name__, static_folder='static')
 
 # Configuration
 MODEL_DIR = Path(__file__).parent / 'models'
-MODEL_PATH = MODEL_DIR / 'heartstroke.json'
+MODEL_PATH = MODEL_DIR / 'strokemodel.json'
 SCALER_PATH = MODEL_DIR / 'scaler.pkl'
 
 # Initialize model and scaler
 model = None
 scaler = None
 
-def load_model():
-    """Load model with better error handling"""
+def load_models():
+    """Load model and scaler with enhanced error handling"""
     global model, scaler
     
     try:
@@ -40,23 +40,23 @@ def load_model():
         print(f"{datetime.now()} - Model and scaler loaded successfully")
         return True
     except Exception as e:
-        print(f"{datetime.now()} - ERROR loading model:")
+        print(f"{datetime.now()} - ERROR loading models:")
         print(traceback.format_exc())
         return False
 
-# Load model at startup
-if not load_model():
-    print(f"{datetime.now()} - WARNING: Model failed to load - service will not function properly")
+# Load models at startup
+if not load_models():
+    print(f"{datetime.now()} - CRITICAL: Models failed to load")
 
 @app.route('/predict', methods=['POST'])
 def predict():
     start_time = datetime.now()
     try:
-        # Check if model is loaded
+        # Check if models are loaded
         if model is None or scaler is None:
             return jsonify({
                 'status': 'error',
-                'message': 'Prediction service not available (model not loaded)',
+                'message': 'Prediction service unavailable (models not loaded)',
                 'timestamp': str(datetime.now())
             }), 503
 
@@ -69,20 +69,19 @@ def predict():
                 'timestamp': str(datetime.now())
             }), 400
 
-        # Required fields
+        # Required fields with validation
         required_fields = {
             'age': (float, 'Age must be a number'),
             'sex': (str, 'Sex must be specified'),
             'bmi': (float, 'BMI must be a number'),
             'cholesterol': (float, 'Cholesterol must be a number'),
-            'hypertension': (int, 'Hypertension must be a number'),
+            'hypertension': (int, 'Hypertension must be 0, 1, or 2'),
             'atrial_fibrillation': (int, 'Atrial fibrillation must be 0 or 1'),
             'diabetes': (int, 'Diabetes must be 0 or 1'),
             'smoking': (int, 'Smoking must be 0 or 1'),
             'previous_stroke': (int, 'Previous stroke must be 0 or 1')
         }
 
-        # Validate all fields
         input_data = {}
         for field, (field_type, error_msg) in required_fields.items():
             if field not in data:
@@ -165,8 +164,7 @@ def predict():
             'status': 'error',
             'message': 'Internal server error',
             'error': str(e),
-            'timestamp': str(datetime.now()),
-            'processing_time_ms': (datetime.now() - start_time).total_seconds() * 1000
+            'timestamp': str(datetime.now())
         }), 500
 
 @app.route('/healthcheck')
