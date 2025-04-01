@@ -431,6 +431,7 @@
   <script>
     document.addEventListener('DOMContentLoaded', function() {
       const form = document.getElementById('strokeForm');
+      const API_URL = 'https://stroke5-0.onrender.com/predict'; // Update if needed
       
       form.addEventListener('submit', async function(e) {
         e.preventDefault();
@@ -460,46 +461,56 @@
             }
           }
 
-          // 1. First calculate risk using medical algorithm (60% weight)
+          // 1. Calculate medical risk (60% weight)
           const medicalRiskPercentage = calculateMedicalRisk(formData);
           let mlRiskPercentage = null;
           let mlStatus = 'Model not used';
-          let combinedRiskPercentage = medicalRiskPercentage; // Default to medical only
+          let combinedRiskPercentage = medicalRiskPercentage;
           
-          // 2. Try to get ML model analysis (40% weight)
+          // 2. Attempt ML model analysis (40% weight)
           try {
-            const mlResponse = await fetch('/predict', {
+            console.log('Attempting ML model request with data:', formData);
+            const mlResponse = await fetch(API_URL, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
               },
-              body: JSON.stringify(formData)
+              body: JSON.stringify(formData),
+              timeout: 10000 // 10 second timeout
             });
+            
+            console.log('Received ML response status:', mlResponse.status);
             
             if (mlResponse.ok) {
               const mlData = await mlResponse.json();
-              mlRiskPercentage = mlData.risk_percentage;
+              console.log('ML model response data:', mlData);
               
-              // 3. Check for major discrepancy (>30% difference)
-              const difference = Math.abs(medicalRiskPercentage - mlRiskPercentage);
-              if (difference > 30) {
-                mlStatus = 'Model result discarded (too different from medical analysis)';
-                combinedRiskPercentage = medicalRiskPercentage;
+              if (mlData.status === 'success') {
+                mlRiskPercentage = mlData.risk_percentage;
+                
+                // Check for major discrepancy (>30% difference)
+                const difference = Math.abs(medicalRiskPercentage - mlRiskPercentage);
+                if (difference > 30) {
+                  mlStatus = 'Model result discarded (>30% difference from medical analysis)';
+                  combinedRiskPercentage = medicalRiskPercentage;
+                } else {
+                  mlStatus = 'Model analysis successful';
+                  combinedRiskPercentage = (0.6 * medicalRiskPercentage) + (0.4 * mlRiskPercentage);
+                }
               } else {
-                mlStatus = 'Model analysis successful';
-                // 60% medical + 40% ML
-                combinedRiskPercentage = (0.6 * medicalRiskPercentage) + (0.4 * mlRiskPercentage);
+                throw new Error(mlData.message || 'Model returned error status');
               }
             } else {
-              throw new Error('Model returned error');
+              const errorData = await mlResponse.json().catch(() => ({}));
+              throw new Error(errorData.message || `HTTP ${mlResponse.status}`);
             }
           } catch (mlError) {
-            console.warn('ML model failed:', mlError);
-            mlStatus = 'Model analysis failed - using medical assessment only';
+            console.error('ML model failed:', mlError);
+            mlStatus = `Model analysis failed: ${mlError.message}`;
             combinedRiskPercentage = medicalRiskPercentage;
           }
           
-          // Prepare result object
+          // Prepare and display results
           const result = {
             medical_risk: medicalRiskPercentage,
             ml_risk: mlRiskPercentage,
@@ -511,8 +522,8 @@
           displayResults(result);
           
         } catch (error) {
-          console.error('Error:', error);
-          showError(error.message || 'Failed to get prediction. Please try again.');
+          console.error('System error:', error);
+          showError(error.message || 'An unexpected error occurred. Please try again.');
         } finally {
           document.getElementById('loadingIndicator').style.display = 'none';
         }
