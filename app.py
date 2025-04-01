@@ -7,6 +7,7 @@ import os
 import traceback
 import numpy as np
 from datetime import datetime
+import gunicorn
 
 app = Flask(__name__, static_folder='static')
 
@@ -176,7 +177,6 @@ def predict():
             'timestamp': str(datetime.now())
         }), 500
 
-# [Rest of the file remains the same...]
 @app.route('/healthcheck')
 def healthcheck():
     return jsonify({
