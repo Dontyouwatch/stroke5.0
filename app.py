@@ -7,7 +7,6 @@ import os
 import traceback
 import numpy as np
 from datetime import datetime
-import gunicorn
 
 app = Flask(__name__, static_folder='static')
 
@@ -20,13 +19,25 @@ SCALER_PATH = MODEL_DIR / 'scaler.pkl'
 model = None
 scaler = None
 
-# Define the exact feature order expected by the model
+# Define the EXACT feature order expected by the model
+# This must match exactly what was used during training
 FEATURE_ORDER = [
-    'Age', 'Sex', 'BMI', 'Cholesterol', 'Hypertension', 
-    'Atrial_Fibrillation', 'Diabetes', 'Smoking', 'Previous_Stroke',
-    'Hypertension_Age', 'Cholesterol_BMI', 'Smoking_Cholesterol',
-    'Age_Group_Middle_Aged', 'Age_Group_Senior', 'Age_Group_Elderly',
-    'BMI_Category_Normal', 'BMI_Category_Overweight', 'BMI_Category_Obese'
+    'Age', 
+    'Sex', 
+    'BMI', 
+    'Cholesterol', 
+    'Hypertension', 
+    'Atrial_Fibrillation', 
+    'Diabetes', 
+    'Smoking', 
+    'Previous_Stroke',
+    'Hypertension_Age',
+    'Cholesterol_BMI',
+    'Smoking_Cholesterol',
+    'Age_Group_40-59',
+    'Age_Group_60+',
+    'BMI_Category_Overweight',
+    'BMI_Category_Obese'
 ]
 
 def load_models():
@@ -59,8 +70,11 @@ if not load_models():
     print(f"{datetime.now()} - CRITICAL: Models failed to load")
 
 def prepare_features(input_data):
-    """Prepare features in exact order expected by the model"""
-    # Create DataFrame with basic features
+    """
+    Prepare features in EXACTLY the same way as during training
+    This must match your training pipeline exactly
+    """
+    # Create base features
     features = {
         'Age': input_data['age'],
         'Sex': 1 if input_data['sex'] == 'male' else 0,
@@ -73,30 +87,23 @@ def prepare_features(input_data):
         'Previous_Stroke': input_data['previous_stroke']
     }
     
-    # Create initial DataFrame
-    input_df = pd.DataFrame([features])
+    # Create interaction terms (must match training)
+    features['Hypertension_Age'] = features['Hypertension'] * features['Age']
+    features['Cholesterol_BMI'] = features['Cholesterol'] * features['BMI']
+    features['Smoking_Cholesterol'] = features['Smoking'] * features['Cholesterol']
     
-    # Feature engineering
-    input_df['Hypertension_Age'] = input_df['Hypertension'] * input_df['Age']
-    input_df['Cholesterol_BMI'] = input_df['Cholesterol'] * input_df['BMI']
-    input_df['Smoking_Cholesterol'] = input_df['Smoking'] * input_df['Cholesterol']
+    # Create age groups (must match training)
+    features['Age_Group_40-59'] = 1 if 40 <= features['Age'] < 60 else 0
+    features['Age_Group_60+'] = 1 if features['Age'] >= 60 else 0
     
-    # Age groups
-    input_df['Age_Group_Middle_Aged'] = ((input_df['Age'] >= 40) & (input_df['Age'] < 60)).astype(int)
-    input_df['Age_Group_Senior'] = ((input_df['Age'] >= 60) & (input_df['Age'] < 80)).astype(int)
-    input_df['Age_Group_Elderly'] = (input_df['Age'] >= 80).astype(int)
+    # Create BMI categories (must match training)
+    features['BMI_Category_Overweight'] = 1 if 25 <= features['BMI'] < 30 else 0
+    features['BMI_Category_Obese'] = 1 if features['BMI'] >= 30 else 0
     
-    # BMI categories
-    input_df['BMI_Category_Normal'] = ((input_df['BMI'] >= 18.5) & (input_df['BMI'] < 25)).astype(int)
-    input_df['BMI_Category_Overweight'] = ((input_df['BMI'] >= 25) & (input_df['BMI'] < 30)).astype(int)
-    input_df['BMI_Category_Obese'] = (input_df['BMI'] >= 30).astype(int)
+    # Create DataFrame with EXACT feature order
+    input_df = pd.DataFrame([features])[FEATURE_ORDER]
     
-    # Ensure all expected columns exist in correct order
-    for col in FEATURE_ORDER:
-        if col not in input_df.columns:
-            input_df[col] = 0
-    
-    return input_df[FEATURE_ORDER]
+    return input_df
 
 @app.route('/predict', methods=['POST'])
 def predict():
