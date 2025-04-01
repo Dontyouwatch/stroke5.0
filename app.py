@@ -10,37 +10,92 @@ from datetime import datetime
 
 app = Flask(__name__, static_folder='static')
 
+# Configuration
+MODEL_DIR = Path(__file__).parent / 'models'
+MODEL_PATH = MODEL_DIR / 'strokemodel.json'
+SCALER_PATH = MODEL_DIR / 'scaler.pkl'
+
 # Initialize model and scaler
 model = None
 scaler = None
 
-def load_model_and_scaler():
-    """Load the trained model (JSON) and scaler (pkl)"""
+# Define the exact feature order expected by the model
+FEATURE_ORDER = [
+    'Age', 'Sex', 'BMI', 'Cholesterol', 'Hypertension', 
+    'Atrial_Fibrillation', 'Diabetes', 'Smoking', 'Previous_Stroke',
+    'Hypertension_Age', 'Cholesterol_BMI', 'Smoking_Cholesterol',
+    'Age_Group_Middle_Aged', 'Age_Group_Senior', 'Age_Group_Elderly',
+    'BMI_Category_Normal', 'BMI_Category_Overweight', 'BMI_Category_Obese'
+]
+
+def load_models():
+    """Load model and scaler with enhanced error handling"""
     global model, scaler
     
     try:
-        model_dir = Path(__file__).parent / 'models'
-        model_path = model_dir / 'strokemodel.json'
-        scaler_path = model_dir / 'scaler.pkl'
+        # Verify model files exist
+        if not MODEL_PATH.exists():
+            raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
+        if not SCALER_PATH.exists():
+            raise FileNotFoundError(f"Scaler file not found at {SCALER_PATH}")
         
-        # Load XGBoost model from JSON
+        # Load model
         model = XGBClassifier()
-        model.load_model(model_path)
+        model.load_model(MODEL_PATH)
         
-        # Load scaler from pickle
-        scaler = joblib.load(scaler_path)
+        # Load scaler
+        scaler = joblib.load(SCALER_PATH)
         
-        print("Model and scaler loaded successfully")
+        print(f"{datetime.now()} - Model and scaler loaded successfully")
         return True
     except Exception as e:
-        print(f"Error loading model or scaler: {str(e)}")
+        print(f"{datetime.now()} - ERROR loading models:")
         print(traceback.format_exc())
         return False
 
-# Load model at startup
-if not load_model_and_scaler():
-    print("Failed to load model - check error messages above")
+# Load models at startup
+if not load_models():
+    print(f"{datetime.now()} - CRITICAL: Models failed to load")
 
+def prepare_features(input_data):
+    """Prepare features in exact order expected by the model"""
+    # Create DataFrame with basic features
+    features = {
+        'Age': input_data['age'],
+        'Sex': 1 if input_data['sex'] == 'male' else 0,
+        'BMI': input_data['bmi'],
+        'Cholesterol': input_data['cholesterol'],
+        'Hypertension': input_data['hypertension'],
+        'Atrial_Fibrillation': input_data['atrial_fibrillation'],
+        'Diabetes': input_data['diabetes'],
+        'Smoking': input_data['smoking'],
+        'Previous_Stroke': input_data['previous_stroke']
+    }
+    
+    # Create initial DataFrame
+    input_df = pd.DataFrame([features])
+    
+    # Feature engineering
+    input_df['Hypertension_Age'] = input_df['Hypertension'] * input_df['Age']
+    input_df['Cholesterol_BMI'] = input_df['Cholesterol'] * input_df['BMI']
+    input_df['Smoking_Cholesterol'] = input_df['Smoking'] * input_df['Cholesterol']
+    
+    # Age groups
+    input_df['Age_Group_Middle_Aged'] = ((input_df['Age'] >= 40) & (input_df['Age'] < 60)).astype(int)
+    input_df['Age_Group_Senior'] = ((input_df['Age'] >= 60) & (input_df['Age'] < 80)).astype(int)
+    input_df['Age_Group_Elderly'] = (input_df['Age'] >= 80).astype(int)
+    
+    # BMI categories
+    input_df['BMI_Category_Normal'] = ((input_df['BMI'] >= 18.5) & (input_df['BMI'] < 25)).astype(int)
+    input_df['BMI_Category_Overweight'] = ((input_df['BMI'] >= 25) & (input_df['BMI'] < 30)).astype(int)
+    input_df['BMI_Category_Obese'] = (input_df['BMI'] >= 30).astype(int)
+    
+    # Ensure all expected columns exist in correct order
+    for col in FEATURE_ORDER:
+        if col not in input_df.columns:
+            input_df[col] = 0
+    
+    return input_df[FEATURE_ORDER]
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -94,55 +149,15 @@ def predict():
                     'timestamp': str(datetime.now())
                 }), 400
 
-        # Prepare features
-        features = {
-            'Age': input_data['age'],
-            'Sex': 1 if input_data['sex'] == 'male' else 0,
-            'BMI': input_data['bmi'],
-            'Cholesterol': input_data['cholesterol'],
-            'Hypertension': input_data['hypertension'],
-            'Atrial_Fibrillation': input_data['atrial_fibrillation'],
-            'Diabetes': input_data['diabetes'],
-            'Smoking': input_data['smoking'],
-            'Previous_Stroke': input_data['previous_stroke']
-        }
-
-        # Create DataFrame
-        input_df = pd.DataFrame([features])
-
-        # Feature engineering
-        input_df['Age_Group'] = pd.cut(input_df['Age'], 
-                                     bins=[0, 40, 60, 80, np.inf], 
-                                     labels=['Young', 'Middle_Aged', 'Senior', 'Elderly'])
-        input_df['BMI_Category'] = pd.cut(input_df['BMI'], 
-                                        bins=[0, 18.5, 24.9, 29.9, np.inf], 
-                                        labels=['Underweight', 'Normal', 'Overweight', 'Obese'])
-        input_df['Hypertension_Age'] = input_df['Hypertension'] * input_df['Age']
-        input_df['Cholesterol_BMI'] = input_df['Cholesterol'] * input_df['BMI']
-        input_df['Smoking_Cholesterol'] = input_df['Smoking'] * input_df['Cholesterol']
-
-        # Convert categoricals
-        input_df = pd.get_dummies(input_df, columns=['Age_Group', 'BMI_Category'], drop_first=True)
-
-        # Ensure all expected columns exist
-        expected_columns = [
-            'Age', 'Sex', 'BMI', 'Cholesterol', 'Hypertension', 
-            'Atrial_Fibrillation', 'Diabetes', 'Smoking', 'Previous_Stroke',
-            'Hypertension_Age', 'Cholesterol_BMI', 'Smoking_Cholesterol',
-            'Age_Group_Middle_Aged', 'Age_Group_Senior', 'Age_Group_Elderly',
-            'BMI_Category_Normal', 'BMI_Category_Overweight', 'BMI_Category_Obese'
-        ]
+        # Prepare features in exact expected order
+        input_df = prepare_features(input_data)
         
-        for col in expected_columns:
-            if col not in input_df.columns:
-                input_df[col] = 0
-
         # Scale features
         numeric_features = ['Age', 'BMI', 'Cholesterol', 'Hypertension_Age', 'Cholesterol_BMI', 'Smoking_Cholesterol']
         input_df[numeric_features] = scaler.transform(input_df[numeric_features])
 
         # Make prediction
-        stroke_prob = float(model.predict_proba(input_df[expected_columns])[0][1])
+        stroke_prob = float(model.predict_proba(input_df)[0][1])
         
         return jsonify({
             'status': 'success',
@@ -161,6 +176,7 @@ def predict():
             'timestamp': str(datetime.now())
         }), 500
 
+# [Rest of the file remains the same...]
 @app.route('/healthcheck')
 def healthcheck():
     return jsonify({
