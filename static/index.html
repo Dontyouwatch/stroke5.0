@@ -430,104 +430,102 @@
 
   <script>
     document.addEventListener('DOMContentLoaded', function() {
-      const form = document.getElementById('strokeForm');
-      const API_URL = 'https://stroke5-0.onrender.com/predict'; // Update if needed
-      
-      form.addEventListener('submit', async function(e) {
-        e.preventDefault();
-        
-        // Show loading state
-        document.getElementById('loadingIndicator').style.display = 'block';
-        document.getElementById('result-container').style.display = 'none';
+  const form = document.getElementById('strokeForm');
+  const API_URL = 'https://stroke5-0.onrender.com/predict';
+  
+  form.addEventListener('submit', async function(e) {
+    e.preventDefault();
+    
+    // Show loading state
+    document.getElementById('loadingIndicator').style.display = 'block';
+    document.getElementById('result-container').style.display = 'none';
 
-        try {
-          // Get all form values
-          const formData = {
-            age: parseFloat(document.getElementById('age').value),
-            sex: document.getElementById('sex').value,
-            bmi: parseFloat(document.getElementById('bmi').value),
-            cholesterol: parseFloat(document.getElementById('cholesterol').value),
-            hypertension: parseInt(document.getElementById('hypertension').value),
-            atrial_fibrillation: parseInt(document.getElementById('atrial-fibrillation').value),
-            diabetes: parseInt(document.getElementById('diabetes').value),
-            smoking: parseInt(document.getElementById('smoking').value),
-            previous_stroke: parseInt(document.getElementById('previous-stroke').value)
-          };
+    try {
+      // Get form values
+      const formData = {
+        age: parseFloat(document.getElementById('age').value),
+        sex: document.getElementById('sex').value,
+        bmi: parseFloat(document.getElementById('bmi').value),
+        cholesterol: parseFloat(document.getElementById('cholesterol').value),
+        hypertension: parseInt(document.getElementById('hypertension').value),
+        atrial_fibrillation: parseInt(document.getElementById('atrial-fibrillation').value),
+        diabetes: parseInt(document.getElementById('diabetes').value),
+        smoking: parseInt(document.getElementById('smoking').value),
+        previous_stroke: parseInt(document.getElementById('previous-stroke').value)
+      };
 
-          // Validate all fields are filled
-          for (const key in formData) {
-            if (isNaN(formData[key]) && key !== 'sex') {
-              throw new Error('Please fill in all fields');
-            }
-          }
-
-          // 1. Calculate medical risk (60% weight)
-          const medicalRiskPercentage = calculateMedicalRisk(formData);
-          let mlRiskPercentage = null;
-          let mlStatus = 'Model not used';
-          let combinedRiskPercentage = medicalRiskPercentage;
-          
-          // 2. Attempt ML model analysis (40% weight)
-          try {
-            console.log('Attempting ML model request with data:', formData);
-            const mlResponse = await fetch(API_URL, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify(formData),
-              timeout: 10000 // 10 second timeout
-            });
-            
-            console.log('Received ML response status:', mlResponse.status);
-            
-            if (mlResponse.ok) {
-              const mlData = await mlResponse.json();
-              console.log('ML model response data:', mlData);
-              
-              if (mlData.status === 'success') {
-                mlRiskPercentage = mlData.risk_percentage;
-                
-                // Check for major discrepancy (>30% difference)
-                const difference = Math.abs(medicalRiskPercentage - mlRiskPercentage);
-                if (difference > 30) {
-                  mlStatus = 'Model result discarded (>30% difference from medical analysis)';
-                  combinedRiskPercentage = medicalRiskPercentage;
-                } else {
-                  mlStatus = 'Model analysis successful';
-                  combinedRiskPercentage = (0.6 * medicalRiskPercentage) + (0.4 * mlRiskPercentage);
-                }
-              } else {
-                throw new Error(mlData.message || 'Model returned error status');
-              }
-            } else {
-              const errorData = await mlResponse.json().catch(() => ({}));
-              throw new Error(errorData.message || `HTTP ${mlResponse.status}`);
-            }
-          } catch (mlError) {
-            console.error('ML model failed:', mlError);
-            mlStatus = `Model analysis failed: ${mlError.message}`;
-            combinedRiskPercentage = medicalRiskPercentage;
-          }
-          
-          // Prepare and display results
-          const result = {
-            medical_risk: medicalRiskPercentage,
-            ml_risk: mlRiskPercentage,
-            combined_risk: combinedRiskPercentage,
-            formData: formData,
-            ml_status: mlStatus
-          };
-
-          displayResults(result);
-          
-        } catch (error) {
-          console.error('System error:', error);
-          showError(error.message || 'An unexpected error occurred. Please try again.');
-        } finally {
-          document.getElementById('loadingIndicator').style.display = 'none';
+      // Validate all fields
+      for (const key in formData) {
+        if (isNaN(formData[key]) && key !== 'sex') {
+          throw new Error('Please fill in all fields');
         }
-      });
+      }
+
+      // 1. Always calculate medical risk (60% weight)
+      const medicalRiskPercentage = calculateMedicalRisk(formData);
+      let mlRiskPercentage = null;
+      let mlStatus = 'Not used (service unavailable)';
+      let combinedRiskPercentage = medicalRiskPercentage;
+      
+      // 2. Attempt to get ML prediction (40% weight)
+      try {
+        console.log('Attempting to call ML model...');
+        const mlResponse = await fetch(API_URL, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(formData)
+        });
+
+        console.log('Response status:', mlResponse.status);
+        
+        if (mlResponse.ok) {
+          const mlData = await mlResponse.json();
+          console.log('ML response:', mlData);
+          
+          if (mlData.status === 'success') {
+            mlRiskPercentage = mlData.risk_percentage;
+            mlStatus = 'Model analysis successful';
+            
+            // Check for major discrepancy
+            const difference = Math.abs(medicalRiskPercentage - mlRiskPercentage);
+            if (difference > 30) {
+              mlStatus = 'Model result discarded (>30% difference)';
+            } else {
+              // 60% medical + 40% ML
+              combinedRiskPercentage = (0.6 * medicalRiskPercentage) + (0.4 * mlRiskPercentage);
+            }
+          }
+        } else {
+          const errorData = await mlResponse.json().catch(() => ({}));
+          throw new Error(errorData.message || `Service unavailable (${mlResponse.status})`);
+        }
+      } catch (mlError) {
+        console.warn('ML model failed:', mlError);
+        mlStatus = `ML service unavailable: ${mlError.message}`;
+        // Fallback to medical-only result
+        combinedRiskPercentage = medicalRiskPercentage;
+      }
+
+      // Prepare and display results
+      const result = {
+        medical_risk: medicalRiskPercentage,
+        ml_risk: mlRiskPercentage,
+        combined_risk: combinedRiskPercentage,
+        formData: formData,
+        ml_status: mlStatus
+      };
+
+      displayResults(result);
+      
+    } catch (error) {
+      console.error('System error:', error);
+      showError(error.message || 'An error occurred. Please try again.');
+    } finally {
+      document.getElementById('loadingIndicator').style.display = 'none';
+    }
+  });
 
       // Medical risk calculation (1-100% scale)
       function calculateMedicalRisk(formData) {
