@@ -461,23 +461,28 @@
         }
       }
 
-      // 1. Always calculate medical risk (60% weight)
+      // 1. Always calculate medical risk (primary)
       const medicalRiskPercentage = calculateMedicalRisk(formData);
       let mlRiskPercentage = null;
       let mlStatus = 'Not used (service unavailable)';
       let combinedRiskPercentage = medicalRiskPercentage;
       
-      // 2. Attempt to get ML prediction (40% weight)
+      // 2. Attempt to get ML prediction (secondary)
       try {
-        console.log('Attempting to call ML model...');
+        console.log('Attempting ML model request...');
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+        
         const mlResponse = await fetch(API_URL, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify(formData)
+          body: JSON.stringify(formData),
+          signal: controller.signal
         });
-
+        
+        clearTimeout(timeoutId);
         console.log('Response status:', mlResponse.status);
         
         if (mlResponse.ok) {
@@ -488,7 +493,7 @@
             mlRiskPercentage = mlData.risk_percentage;
             mlStatus = 'Model analysis successful';
             
-            // Check for major discrepancy
+            // Check for major discrepancy (>30% difference)
             const difference = Math.abs(medicalRiskPercentage - mlRiskPercentage);
             if (difference > 30) {
               mlStatus = 'Model result discarded (>30% difference)';
@@ -498,12 +503,16 @@
             }
           }
         } else {
-          const errorData = await mlResponse.json().catch(() => ({}));
-          throw new Error(errorData.message || `Service unavailable (${mlResponse.status})`);
+          const errorText = await mlResponse.text();
+          throw new Error(`Service returned ${mlResponse.status}: ${errorText}`);
         }
       } catch (mlError) {
         console.warn('ML model failed:', mlError);
-        mlStatus = `ML service unavailable: ${mlError.message}`;
+        if (mlError.name === 'AbortError') {
+          mlStatus = 'Model request timed out (10s)';
+        } else {
+          mlStatus = `ML service error: ${mlError.message}`;
+        }
         // Fallback to medical-only result
         combinedRiskPercentage = medicalRiskPercentage;
       }
@@ -526,7 +535,6 @@
       document.getElementById('loadingIndicator').style.display = 'none';
     }
   });
-
       // Medical risk calculation (1-100% scale)
       function calculateMedicalRisk(formData) {
         let riskScore = 1; // Base score
