@@ -10,43 +10,37 @@ from datetime import datetime
 
 app = Flask(__name__, static_folder='static')
 
-# Configuration
-MODEL_DIR = Path(__file__).parent / 'models'
-MODEL_PATH = MODEL_DIR / 'strokemodel.json'
-SCALER_PATH = MODEL_DIR / 'scaler.pkl'
-
 # Initialize model and scaler
 model = None
 scaler = None
 
-def load_models():
-    """Load model and scaler with enhanced error handling"""
+def load_model_and_scaler():
+    """Load the trained model (JSON) and scaler (pkl)"""
     global model, scaler
     
     try:
-        # Verify model files exist
-        if not MODEL_PATH.exists():
-            raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
-        if not SCALER_PATH.exists():
-            raise FileNotFoundError(f"Scaler file not found at {SCALER_PATH}")
+        model_dir = Path(__file__).parent / 'models'
+        model_path = model_dir / 'strokemodel.json'
+        scaler_path = model_dir / 'scaler.pkl'
         
-        # Load model
+        # Load XGBoost model from JSON
         model = XGBClassifier()
-        model.load_model(MODEL_PATH)
+        model.load_model(model_path)
         
-        # Load scaler
-        scaler = joblib.load(SCALER_PATH)
+        # Load scaler from pickle
+        scaler = joblib.load(scaler_path)
         
-        print(f"{datetime.now()} - Model and scaler loaded successfully")
+        print("Model and scaler loaded successfully")
         return True
     except Exception as e:
-        print(f"{datetime.now()} - ERROR loading models:")
+        print(f"Error loading model or scaler: {str(e)}")
         print(traceback.format_exc())
         return False
 
-# Load models at startup
-if not load_models():
-    print(f"{datetime.now()} - CRITICAL: Models failed to load")
+# Load model at startup
+if not load_model_and_scaler():
+    print("Failed to load model - check error messages above")
+
 
 @app.route('/predict', methods=['POST'])
 def predict():
