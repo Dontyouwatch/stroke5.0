@@ -10,51 +10,57 @@ from datetime import datetime
 
 app = Flask(__name__, static_folder='static')
 
+# Configuration
+MODEL_DIR = Path(__file__).parent / 'models'
+MODEL_PATH = MODEL_DIR / 'heartstroke.json'
+SCALER_PATH = MODEL_DIR / 'scaler.pkl'
+
 # Initialize model and scaler
 model = None
 scaler = None
 
-def load_model_and_scaler():
-    """Load the trained model and scaler with enhanced error handling"""
+def load_model():
+    """Load model with better error handling"""
     global model, scaler
     
     try:
-        model_dir = Path(__file__).parent / 'models'
-        model_path = model_dir / 'heartstroke.json'
-        scaler_path = model_dir / 'scaler.pkl'
+        # Verify model files exist
+        if not MODEL_PATH.exists():
+            raise FileNotFoundError(f"Model file not found at {MODEL_PATH}")
+        if not SCALER_PATH.exists():
+            raise FileNotFoundError(f"Scaler file not found at {SCALER_PATH}")
         
-        if not model_path.exists() or not scaler_path.exists():
-            raise FileNotFoundError("Model files not found")
-        
-        # Load XGBoost model from JSON
+        # Load model
         model = XGBClassifier()
-        model.load_model(model_path)
+        model.load_model(MODEL_PATH)
         
-        # Load scaler from pickle
-        scaler = joblib.load(scaler_path)
+        # Load scaler
+        scaler = joblib.load(SCALER_PATH)
         
         print(f"{datetime.now()} - Model and scaler loaded successfully")
         return True
     except Exception as e:
-        print(f"{datetime.now()} - Error loading model or scaler: {str(e)}")
+        print(f"{datetime.now()} - ERROR loading model:")
         print(traceback.format_exc())
         return False
 
 # Load model at startup
-if not load_model_and_scaler():
-    print(f"{datetime.now()} - WARNING: Failed to load model - service will not function properly")
+if not load_model():
+    print(f"{datetime.now()} - WARNING: Model failed to load - service will not function properly")
 
 @app.route('/predict', methods=['POST'])
 def predict():
     start_time = datetime.now()
     try:
+        # Check if model is loaded
         if model is None or scaler is None:
             return jsonify({
                 'status': 'error',
-                'message': 'Prediction service not available',
+                'message': 'Prediction service not available (model not loaded)',
                 'timestamp': str(datetime.now())
             }), 503
-        
+
+        # Get and validate input data
         data = request.get_json()
         if not data:
             return jsonify({
@@ -63,34 +69,54 @@ def predict():
                 'timestamp': str(datetime.now())
             }), 400
 
-        # Validate and convert input data
-        required_fields = ['age', 'sex', 'bmi', 'cholesterol', 'hypertension', 
-                          'atrial_fibrillation', 'diabetes', 'smoking', 'previous_stroke']
-        
-        for field in required_fields:
+        # Required fields
+        required_fields = {
+            'age': (float, 'Age must be a number'),
+            'sex': (str, 'Sex must be specified'),
+            'bmi': (float, 'BMI must be a number'),
+            'cholesterol': (float, 'Cholesterol must be a number'),
+            'hypertension': (int, 'Hypertension must be a number'),
+            'atrial_fibrillation': (int, 'Atrial fibrillation must be 0 or 1'),
+            'diabetes': (int, 'Diabetes must be 0 or 1'),
+            'smoking': (int, 'Smoking must be 0 or 1'),
+            'previous_stroke': (int, 'Previous stroke must be 0 or 1')
+        }
+
+        # Validate all fields
+        input_data = {}
+        for field, (field_type, error_msg) in required_fields.items():
             if field not in data:
                 return jsonify({
                     'status': 'error',
                     'message': f'Missing required field: {field}',
                     'timestamp': str(datetime.now())
                 }), 400
+            
+            try:
+                input_data[field] = field_type(data[field])
+            except (ValueError, TypeError):
+                return jsonify({
+                    'status': 'error',
+                    'message': error_msg,
+                    'timestamp': str(datetime.now())
+                }), 400
 
-        # Prepare input data
-        input_data = {
-            'Age': float(data['age']),
-            'Sex': 1 if data['sex'] == 'male' else 0,
-            'BMI': float(data['bmi']),
-            'Cholesterol': float(data['cholesterol']),
-            'Hypertension': int(data['hypertension']),
-            'Atrial_Fibrillation': int(data['atrial_fibrillation']),
-            'Diabetes': int(data['diabetes']),
-            'Smoking': int(data['smoking']),
-            'Previous_Stroke': int(data['previous_stroke'])
+        # Prepare features
+        features = {
+            'Age': input_data['age'],
+            'Sex': 1 if input_data['sex'] == 'male' else 0,
+            'BMI': input_data['bmi'],
+            'Cholesterol': input_data['cholesterol'],
+            'Hypertension': input_data['hypertension'],
+            'Atrial_Fibrillation': input_data['atrial_fibrillation'],
+            'Diabetes': input_data['diabetes'],
+            'Smoking': input_data['smoking'],
+            'Previous_Stroke': input_data['previous_stroke']
         }
 
-        # Create DataFrame and apply feature engineering
-        input_df = pd.DataFrame([input_data])
-        
+        # Create DataFrame
+        input_df = pd.DataFrame([features])
+
         # Feature engineering
         input_df['Age_Group'] = pd.cut(input_df['Age'], 
                                      bins=[0, 40, 60, 80, np.inf], 
@@ -102,7 +128,7 @@ def predict():
         input_df['Cholesterol_BMI'] = input_df['Cholesterol'] * input_df['BMI']
         input_df['Smoking_Cholesterol'] = input_df['Smoking'] * input_df['Cholesterol']
 
-        # Convert categoricals to dummy variables
+        # Convert categoricals
         input_df = pd.get_dummies(input_df, columns=['Age_Group', 'BMI_Category'], drop_first=True)
 
         # Ensure all expected columns exist
@@ -125,35 +151,23 @@ def predict():
         # Make prediction
         stroke_prob = float(model.predict_proba(input_df[expected_columns])[0][1])
         
-        response = {
+        return jsonify({
             'status': 'success',
             'risk_percentage': round(stroke_prob * 100, 1),
             'timestamp': str(datetime.now()),
             'processing_time_ms': (datetime.now() - start_time).total_seconds() * 1000
-        }
-        
-        print(f"Successful prediction: {response}")
-        return jsonify(response)
+        })
         
     except Exception as e:
-        error_msg = f"Prediction error: {str(e)}"
-        print(error_msg)
+        print(f"{datetime.now()} - Prediction error: {str(e)}")
         print(traceback.format_exc())
         return jsonify({
             'status': 'error',
             'message': 'Internal server error',
-            'error_details': str(e),
+            'error': str(e),
             'timestamp': str(datetime.now()),
             'processing_time_ms': (datetime.now() - start_time).total_seconds() * 1000
         }), 500
-
-@app.route('/')
-def serve_index():
-    return send_from_directory(app.static_folder, 'index.html')
-
-@app.route('/<path:path>')
-def serve_static(path):
-    return send_from_directory(app.static_folder, path)
 
 @app.route('/healthcheck')
 def healthcheck():
@@ -163,6 +177,14 @@ def healthcheck():
         'scaler_loaded': bool(scaler),
         'timestamp': str(datetime.now())
     })
+
+@app.route('/')
+def serve_index():
+    return send_from_directory(app.static_folder, 'index.html')
+
+@app.route('/<path:path>')
+def serve_static(path):
+    return send_from_directory(app.static_folder, path)
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
