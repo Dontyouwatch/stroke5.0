@@ -1,7 +1,19 @@
-flask 
-xgboost
+# Core Requirements
+Flask
 pandas
+numpy
 scikit-learn
 joblib
-numpy
+requests
+
+# Machine Learning Specific
+xgboost
+imbalanced-learn
+
+# Production Server (optional)
 gunicorn
+gevent
+
+# Additional Utilities
+python-dotenv
+Flask-Cors
