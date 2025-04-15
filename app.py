@@ -1,21 +1,55 @@
 from flask import Flask, request, jsonify
-import pickle
+import joblib
 import pandas as pd
 import numpy as np
 import os
+import xgboost as xgb
+from sklearn.preprocessing import StandardScaler
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder='static')
 
-# Load your trained model
-model_path = 'stroke_model.pkl'  # Update with your actual model path
-with open(model_path, 'rb') as f:
-    model = pickle.load(f)
+# Configure model paths
+MODEL_PATHS = {
+    'xgboost_json': 'models/strokemodel.json',
+    'xgboost_pkl': 'models/xgboost_model.pkl',
+    'ensemble': 'models/ensemble_model.pkl',
+    'scaler': 'models/scaler.pkl'
+}
+
+# Load models
+try:
+    # Try loading XGBoost from JSON first
+    model = xgb.Booster()
+    model.load_model(MODEL_PATHS['xgboost_json'])
+    print("Loaded XGBoost model from JSON")
+    model_type = 'xgboost_json'
+except:
+    try:
+        # Fall back to pickle version
+        model = joblib.load(MODEL_PATHS['xgboost_pkl'])
+        print("Loaded XGBoost model from pickle")
+        model_type = 'xgboost_pkl'
+    except:
+        try:
+            # Final fallback to ensemble
+            model = joblib.load(MODEL_PATHS['ensemble'])
+            print("Loaded ensemble model")
+            model_type = 'ensemble'
+        except Exception as e:
+            raise Exception(f"Could not load any model: {str(e)}")
+
+# Load scaler if exists
+try:
+    scaler = joblib.load(MODEL_PATHS['scaler'])
+    print("Loaded scaler")
+except:
+    scaler = None
+    print("No scaler found")
 
 @app.route('/')
 def home():
-    # Serve the HTML file
-    with open('index.html', 'r') as f:
-        return f.read()
+    # Serve the HTML file from static folder
+    return app.send_static_file('index.html')
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -42,16 +76,31 @@ def predict():
             'Atrial_Fibrillation', 'Diabetes', 'Smoking', 'Previous_Stroke'
         ])
         
-        # Make prediction
-        prediction = model.predict_proba(df)[0][1]  # Probability of stroke
+        # Scale features if scaler exists
+        if scaler is not None:
+            df_scaled = scaler.transform(df)
+            df = pd.DataFrame(df_scaled, columns=df.columns)
         
-        # Convert to percentage (0-100%)
-        risk_percentage = round(prediction * 100, 2)
+        # Convert to DMatrix for XGBoost JSON model
+        if model_type == 'xgboost_json':
+            dmatrix = xgb.DMatrix(df)
+            prediction = model.predict(dmatrix)[0]
+        else:
+            # For sklearn-style models
+            if hasattr(model, 'predict_proba'):
+                prediction = model.predict_proba(df)[0][1]  # Probability of stroke (class 1)
+            else:
+                prediction = model.predict(df)[0]
+        
+        # Convert to percentage (0-100%) with clipping
+        risk_percentage = min(100, max(0, round(float(prediction) * 100, 2)))
         
         # Return result
         return jsonify({
             'risk_percentage': risk_percentage,
-            'status': 'success'
+            'status': 'success',
+            'model_used': model_type,
+            'features_used': input_data
         })
         
     except Exception as e:
@@ -91,4 +140,8 @@ def _map_cholesterol(chol_value):
         return 2  # High
 
 if __name__ == '__main__':
+    # Check if models exist
+    if not any(os.path.exists(path) for path in MODEL_PATHS.values()):
+        raise FileNotFoundError("No trained model found. Please run the training script first.")
+    
     app.run(debug=True)
