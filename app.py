@@ -3,145 +3,113 @@ import joblib
 import pandas as pd
 import numpy as np
 import os
-import xgboost as xgb
-from sklearn.preprocessing import StandardScaler
 
-app = Flask(__name__, static_folder='static')
+app = Flask(__name__)
 
-# Configure model paths
+# Model paths
 MODEL_PATHS = {
-    'xgboost_json': 'models/strokemodel.json',
-    'xgboost_pkl': 'models/xgboost_model.pkl',
-    'ensemble': 'models/ensemble_model.pkl',
-    'scaler': 'models/scaler.pkl'
+    'ensemble': 'ensemble_model.pkl',
+    'xgboost': 'xgboost_model.pkl'
 }
 
-# Load models
+# Load the ensemble model first, fall back to XGBoost if needed
 try:
-    # Try loading XGBoost from JSON first
-    model = xgb.Booster()
-    model.load_model(MODEL_PATHS['xgboost_json'])
-    print("Loaded XGBoost model from JSON")
-    model_type = 'xgboost_json'
-except:
+    model = joblib.load(MODEL_PATHS['ensemble'])
+    print("Loaded ensemble model")
+    model_type = 'ensemble'
+except Exception as e:
+    print(f"Failed to load ensemble model: {str(e)}")
     try:
-        # Fall back to pickle version
-        model = joblib.load(MODEL_PATHS['xgboost_pkl'])
-        print("Loaded XGBoost model from pickle")
-        model_type = 'xgboost_pkl'
-    except:
-        try:
-            # Final fallback to ensemble
-            model = joblib.load(MODEL_PATHS['ensemble'])
-            print("Loaded ensemble model")
-            model_type = 'ensemble'
-        except Exception as e:
-            raise Exception(f"Could not load any model: {str(e)}")
-
-# Load scaler if exists
-try:
-    scaler = joblib.load(MODEL_PATHS['scaler'])
-    print("Loaded scaler")
-except:
-    scaler = None
-    print("No scaler found")
+        model = joblib.load(MODEL_PATHS['xgboost'])
+        print("Loaded XGBoost model")
+        model_type = 'xgboost'
+    except Exception as e:
+        raise Exception(f"Failed to load any model: {str(e)}")
 
 @app.route('/')
 def home():
-    # Serve the HTML file from static folder
-    return app.send_static_file('index.html')
+    with open('index.html', 'r') as f:
+        return f.read()
 
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
-        # Get data from POST request
+        # Get and validate input data
         data = request.get_json()
+        if not data:
+            raise ValueError("No input data provided")
         
-        # Map the form data to match your model's expected input
+        # Prepare features in EXACTLY the same order as training (9 features)
+        required_features = [
+            'Age', 'Sex', 'BMI', 'Cholesterol', 'Hypertension',
+            'Atrial_Fibrillation', 'Diabetes', 'Smoking', 'Previous_Stroke'
+        ]
+        
+        # Map input data to model features
         input_data = {
             'Age': _map_age(data['age']),
             'Sex': 1 if data['sex'] == 'male' else 0,
             'BMI': _map_bmi(data['bmi']),
             'Cholesterol': _map_cholesterol(data['cholesterol']),
-            'Hypertension': data['hypertension'],
-            'Atrial_Fibrillation': data['atrial_fibrillation'],
-            'Diabetes': data['diabetes'],
-            'Smoking': data['smoking'],
-            'Previous_Stroke': data['previous_stroke']
+            'Hypertension': int(data['hypertension']),
+            'Atrial_Fibrillation': int(data['atrial_fibrillation']),
+            'Diabetes': int(data['diabetes']),
+            'Smoking': int(data['smoking']),
+            'Previous_Stroke': int(data['previous_stroke'])
         }
         
-        # Convert to DataFrame with correct column order
-        df = pd.DataFrame([input_data], columns=[
-            'Age', 'Sex', 'BMI', 'Cholesterol', 'Hypertension',
-            'Atrial_Fibrillation', 'Diabetes', 'Smoking', 'Previous_Stroke'
-        ])
+        # Create DataFrame with correct feature order
+        df = pd.DataFrame([input_data], columns=required_features)
         
-        # Scale features if scaler exists
-        if scaler is not None:
-            df_scaled = scaler.transform(df)
-            df = pd.DataFrame(df_scaled, columns=df.columns)
+        # Debug: Verify features before prediction
+        print("Features being sent to model:")
+        print(df.columns.tolist())
         
-        # Convert to DMatrix for XGBoost JSON model
-        if model_type == 'xgboost_json':
-            dmatrix = xgb.DMatrix(df)
-            prediction = model.predict(dmatrix)[0]
+        # Make prediction
+        if hasattr(model, 'predict_proba'):
+            prediction = model.predict_proba(df)[0][1]  # Probability of class 1 (stroke)
         else:
-            # For sklearn-style models
-            if hasattr(model, 'predict_proba'):
-                prediction = model.predict_proba(df)[0][1]  # Probability of stroke (class 1)
-            else:
-                prediction = model.predict(df)[0]
+            prediction = model.predict(df)[0]  # Class prediction
         
-        # Convert to percentage (0-100%) with clipping
+        # Convert to percentage (0-100%)
         risk_percentage = min(100, max(0, round(float(prediction) * 100, 2)))
         
-        # Return result
         return jsonify({
             'risk_percentage': risk_percentage,
             'status': 'success',
-            'model_used': model_type,
-            'features_used': input_data
+            'model_used': model_type
         })
         
     except Exception as e:
         return jsonify({
             'error': str(e),
-            'status': 'error'
+            'status': 'error',
+            'message': 'Ensure you are sending exactly 9 features (excluding Stroke)'
         }), 400
 
-# Helper functions to map form values to model expected values
-def _map_age(age_value):
-    age = float(age_value)
-    if age < 40:
-        return 1  # Young
-    elif 40 <= age < 60:
-        return 2  # Middle-aged
-    else:
-        return 3  # Elderly
+# Mapping functions (must match training preprocessing)
+def _map_age(age):
+    age = float(age)
+    if age < 40: return 1
+    elif age < 60: return 2
+    else: return 3
 
-def _map_bmi(bmi_value):
-    bmi = float(bmi_value)
-    if bmi < 18.5:
-        return 1  # Underweight
-    elif 18.5 <= bmi < 25:
-        return 2  # Normal
-    elif 25 <= bmi < 30:
-        return 3  # Overweight
-    else:
-        return 4  # Obese
+def _map_bmi(bmi):
+    bmi = float(bmi)
+    if bmi < 18.5: return 1
+    elif bmi < 25: return 2
+    elif bmi < 30: return 3
+    else: return 4
 
-def _map_cholesterol(chol_value):
-    chol = float(chol_value)
-    if chol < 200:
-        return 0  # Normal
-    elif 200 <= chol < 240:
-        return 1  # Borderline high
-    else:
-        return 2  # High
+def _map_cholesterol(chol):
+    chol = float(chol)
+    if chol < 200: return 0
+    elif chol < 240: return 1
+    else: return 2
 
 if __name__ == '__main__':
-    # Check if models exist
-    if not any(os.path.exists(path) for path in MODEL_PATHS.values()):
-        raise FileNotFoundError("No trained model found. Please run the training script first.")
+    # Verify at least one model exists
+    if not any(os.path.exists(p) for p in MODEL_PATHS.values()):
+        raise FileNotFoundError("No model files found. Please ensure either ensemble_model.pkl or xgboost_model.pkl exists")
     
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000)
