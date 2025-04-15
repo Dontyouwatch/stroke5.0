@@ -1,113 +1,94 @@
 from flask import Flask, request, jsonify
+import pickle
 import pandas as pd
-import joblib
 import numpy as np
-import requests
 import os
 
 app = Flask(__name__)
 
-# Model URLs from GitHub
-MODEL_URLS = {
-    'xgb': 'https://github.com/Dontyouwatch/stroke5.0/raw/main/models/xgboost_model.pkl',
-    'ensemble': 'https://github.com/Dontyouwatch/stroke5.0/raw/main/models/ensemble_model.pkl'
-}
+# Load your trained model
+model_path = 'stroke_model.pkl'  # Update with your actual model path
+with open(model_path, 'rb') as f:
+    model = pickle.load(f)
 
-# Directory to cache downloaded models
-MODEL_CACHE_DIR = 'model_cache'
-os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-
-def download_model(model_name):
-    """Download model from GitHub if not already cached"""
-    cache_path = os.path.join(MODEL_CACHE_DIR, f'{model_name}_model.pkl')
-    
-    if not os.path.exists(cache_path):
-        print(f"Downloading {model_name} model from GitHub...")
-        try:
-            response = requests.get(MODEL_URLS[model_name])
-            response.raise_for_status()
-            with open(cache_path, 'wb') as f:
-                f.write(response.content)
-        except Exception as e:
-            print(f"Error downloading {model_name} model: {str(e)}")
-            return None
-    
-    try:
-        return joblib.load(cache_path)
-    except Exception as e:
-        print(f"Error loading {model_name} model: {str(e)}")
-        return None
-
-# Load models at startup with sentence case feature alignment
-try:
-    xgb_model = download_model('xgb')
-    ensemble_model = download_model('ensemble')
-    print("Models loaded successfully")
-except Exception as e:
-    print(f"Error loading models: {str(e)}")
-    xgb_model = None
-    ensemble_model = None
+@app.route('/')
+def home():
+    # Serve the HTML file
+    with open('index.html', 'r') as f:
+        return f.read()
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    if not xgb_model or not ensemble_model:
-        return jsonify({
-            'status': 'error',
-            'message': 'Models not loaded properly'
-        }), 500
-
     try:
-        # 1. Get and validate form data
-        data = request.json
-        if not data:
-            return jsonify({'status': 'error', 'message': 'No data received'}), 400
-
-        # 2. Transform form data to match dataset's sentence case features
-        features = {
-            'Age': float(data['age']),
+        # Get data from POST request
+        data = request.get_json()
+        
+        # Map the form data to match your model's expected input
+        input_data = {
+            'Age': _map_age(data['age']),
             'Sex': 1 if data['sex'] == 'male' else 0,
-            'BMI': float(data['bmi']),
-            'Cholesterol': float(data['cholesterol']),
-            'Hypertension': int(data['hypertension']),
-            'Atrial Fibrillation': int(data['atrial_fibrillation']),
-            'Diabetes': int(data['diabetes']),
-            'Smoking': int(data['smoking']),
-            'Previous Stroke': int(data['previous_stroke'])
+            'BMI': _map_bmi(data['bmi']),
+            'Cholesterol': _map_cholesterol(data['cholesterol']),
+            'Hypertension': data['hypertension'],
+            'Atrial_Fibrillation': data['atrial_fibrillation'],
+            'Diabetes': data['diabetes'],
+            'Smoking': data['smoking'],
+            'Previous_Stroke': data['previous_stroke']
         }
-
-        # 3. Create DataFrame with exact sentence case feature order
-        feature_order = [
+        
+        # Convert to DataFrame with correct column order
+        df = pd.DataFrame([input_data], columns=[
             'Age', 'Sex', 'BMI', 'Cholesterol', 'Hypertension',
-            'Atrial Fibrillation', 'Diabetes', 'Smoking', 'Previous Stroke'
-        ]
-        input_df = pd.DataFrame([features], columns=feature_order)
-
-        # 4. Make predictions with both models
-        xgb_prob = xgb_model.predict_proba(input_df)[0][1]
-        ensemble_prob = ensemble_model.predict_proba(input_df)[0][1]
-
+            'Atrial_Fibrillation', 'Diabetes', 'Smoking', 'Previous_Stroke'
+        ])
+        
+        # Make prediction
+        prediction = model.predict_proba(df)[0][1]  # Probability of stroke
+        
+        # Convert to percentage (0-100%)
+        risk_percentage = round(prediction * 100, 2)
+        
+        # Return result
         return jsonify({
-            'status': 'success',
-            'xgb_risk': round(xgb_prob * 100, 1),
-            'ensemble_risk': round(ensemble_prob * 100, 1),
-            'features': {k.lower().replace(' ', '_'): v for k, v in features.items()}  # Return form-style keys
+            'risk_percentage': risk_percentage,
+            'status': 'success'
         })
-
-    except KeyError as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'Missing form field: {str(e)}'
-        }), 400
-    except ValueError as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'Invalid value: {str(e)}'
-        }), 400
+        
     except Exception as e:
         return jsonify({
-            'status': 'error',
-            'message': f'Prediction failed: {str(e)}'
-        }), 500
+            'error': str(e),
+            'status': 'error'
+        }), 400
+
+# Helper functions to map form values to model expected values
+def _map_age(age_value):
+    age = float(age_value)
+    if age < 40:
+        return 1  # Young
+    elif 40 <= age < 60:
+        return 2  # Middle-aged
+    else:
+        return 3  # Elderly
+
+def _map_bmi(bmi_value):
+    bmi = float(bmi_value)
+    if bmi < 18.5:
+        return 1  # Underweight
+    elif 18.5 <= bmi < 25:
+        return 2  # Normal
+    elif 25 <= bmi < 30:
+        return 3  # Overweight
+    else:
+        return 4  # Obese
+
+def _map_cholesterol(chol_value):
+    chol = float(chol_value)
+    if chol < 200:
+        return 0  # Normal
+    elif 200 <= chol < 240:
+        return 1  # Borderline high
+    else:
+        return 2  # High
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    app.run(debug=True)
